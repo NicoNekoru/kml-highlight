@@ -8,6 +8,9 @@
 		"./codemirror": "./src/codemirror/index.ts",
 		"./spec/kml.tmLanguage.json": "./spec/kml.tmLanguage.json"
 	},
+	"dependencies": {
+		"@codemirror/legacy-modes": "^6.5.2"
+	},
 	"peerDependencies": {
 		"@codemirror/language": "^6.0.0",
 		"@lezer/highlight": "^1.0.0"

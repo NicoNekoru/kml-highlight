@@ -86,6 +86,10 @@
 					"name": "string.other.math"
 				},
 				{
+					"match": "\\^[\\[][^\\]]*\\]",
+					"name": "string.footnote"
+				},
+				{
 					"match": "\\[[^\\]\\n]*\\]\\([^)\\n]*\\)",
 					"name": "markup.underline.link"
 				}

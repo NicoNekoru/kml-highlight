@@ -5,15 +5,26 @@ import {
 	type StringStream,
 } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
+import {
+	type LegacyCodeMode,
+	readLegacyToken,
+	resolveLegacyLang,
+	startLegacyState,
+} from './legacyModes.ts'
 
 type KmlState = {
-	/** 1-based physical line index (including blank lines). */
 	line: number
 	inFrontmatter: boolean
 	inCodeBlock: boolean
 	inDollarDisplay: boolean
 	inBracketDisplay: boolean
 	inHtmlFence: boolean
+	/** Bold / italic nesting (KML does not cross newlines). */
+	inlineStack: ('b' | 'i')[]
+	codeInnerMode: LegacyCodeMode | null
+	codeInnerState: unknown
+	/** Heuristic: previous non-blank line was a list marker line. */
+	listContinuationCandidate: boolean
 }
 
 function trimmedFrom(stream: StringStream, pos: number): string {
@@ -22,6 +33,84 @@ function trimmedFrom(stream: StringStream, pos: number): string {
 
 function isFenceLine(stream: StringStream, pos: number): boolean {
 	return /^\s*---\s*$/.test(stream.string.slice(pos))
+}
+
+function toggleBold(state: KmlState) {
+	const s = state.inlineStack
+	if (s.length && s[s.length - 1] === 'b') s.pop()
+	else s.push('b')
+}
+
+function toggleItalic(state: KmlState) {
+	const s = state.inlineStack
+	if (s.length && s[s.length - 1] === 'i') s.pop()
+	else s.push('i')
+}
+
+function stackStyleTag(state: KmlState): string | null {
+	const { inlineStack: st } = state
+	if (!st.length) return null
+	const hasB = st.includes('b')
+	const hasI = st.includes('i')
+	if (hasB && hasI) return 'strong em'
+	if (hasB) return 'strong'
+	if (hasI) return 'em'
+	return null
+}
+
+function looksLikeBlockStartText(text: string): boolean {
+	const u = text.trimStart()
+	return (
+		/^#/.test(u) ||
+		/^\$\$/.test(u) ||
+		/^\\\[(?:\s|$)/.test(u) ||
+		/^```/.test(u) ||
+		/^:::html\s*$/.test(u) ||
+		/^---\s*$/.test(u) ||
+		/^-\s/.test(u) ||
+		/^-\[[^\]]+\]\s+/.test(u) ||
+		/^=\[[^\]]+\]\s+/.test(u) ||
+		/^=(?:[0-9]+|[aAiI])\.(?:\s|$)/.test(u)
+	)
+}
+
+function nextDelimiterIndex(line: string, pos: number): number {
+	for (let i = pos; i < line.length; i++) {
+		if (line.startsWith('<br>', i)) return i
+		if (line.startsWith('**', i)) return i
+		if (line[i] === '*' && line[i + 1] !== '*') return i
+		if (line[i] === '`') return i
+		if (line[i] === '$' && line[i + 1] !== '$') return i
+		if (line.startsWith('\\(', i)) return i
+		if (line.startsWith('^[', i)) return i
+		if (line[i] === '[') return i
+		if (line.startsWith('^{', i)) return i
+		if (line.startsWith('_{', i)) return i
+		if (line.startsWith('\\n', i)) return i
+	}
+	return -1
+}
+
+function eatBacktickRun(
+	stream: StringStream,
+	line: string,
+	pos: number,
+): string {
+	let n = 0
+	while (pos + n < line.length && line[pos + n] === '`') n++
+	stream.pos = pos + n
+	if (n === 0) {
+		stream.next()
+		return 'code'
+	}
+	const fence = '`'.repeat(n)
+	const close = line.indexOf(fence, stream.pos)
+	if (close >= 0) {
+		stream.pos = close + n
+	} else {
+		stream.skipToEnd()
+	}
+	return 'code'
 }
 
 /** KML link: first `]` closes label; URL uses nested `(` depth. */
@@ -50,7 +139,6 @@ function consumeKmlLink(stream: StringStream): boolean {
 	return false
 }
 
-/** `^[ … ]` with bracket depth (note may contain `](` for links). */
 function consumeKmlFootnote(stream: StringStream): boolean {
 	const line = stream.string
 	const pos = stream.pos
@@ -88,7 +176,6 @@ function consumeKmlFootnote(stream: StringStream): boolean {
 	return false
 }
 
-/** Balanced `{…}` with `\{` `\}` escapes (sup/sub). */
 function consumeBracedAfter(stream: StringStream, openLen: 2 | 3): boolean {
 	const line = stream.string
 	let pos = stream.pos + openLen
@@ -143,7 +230,7 @@ function tokenFrontmatterLine(stream: StringStream): string | null {
 	return 'string'
 }
 
-function tokenInline(stream: StringStream): string | null {
+function tokenInlineRich(stream: StringStream, state: KmlState): string | null {
 	const line = stream.string
 	const pos = stream.pos
 
@@ -153,13 +240,7 @@ function tokenInline(stream: StringStream): string | null {
 	}
 
 	if (line[pos] === '`') {
-		const close = line.indexOf('`', pos + 1)
-		if (close > pos) {
-			stream.pos = close + 1
-			return 'code'
-		}
-		stream.next()
-		return 'code'
+		return eatBacktickRun(stream, line, pos)
 	}
 
 	if (
@@ -187,12 +268,14 @@ function tokenInline(stream: StringStream): string | null {
 	}
 
 	if (line.startsWith('**', pos)) {
-		stream.pos += 2
+		stream.pos = pos + 2
+		toggleBold(state)
 		return 'strong'
 	}
 
-	if (line[pos] === '*') {
-		stream.next()
+	if (line[pos] === '*' && line[pos + 1] !== '*') {
+		stream.pos = pos + 1
+		toggleItalic(state)
 		return 'em'
 	}
 
@@ -206,13 +289,13 @@ function tokenInline(stream: StringStream): string | null {
 
 	if (line.startsWith('^{', pos)) {
 		if (consumeBracedAfter(stream, 2)) return 'atom'
-		stream.pos += 2
+		stream.pos = pos + 2
 		return 'atom'
 	}
 
 	if (line.startsWith('_{', pos)) {
 		if (consumeBracedAfter(stream, 2)) return 'atom'
-		stream.pos += 2
+		stream.pos = pos + 2
 		return 'atom'
 	}
 
@@ -221,13 +304,23 @@ function tokenInline(stream: StringStream): string | null {
 		return 'keyword'
 	}
 
-	if (stream.eol()) return null
-	stream.next()
-	stream.eatWhile((c) => c !== ' ' && c !== '\t')
-	return null
+	const nx = nextDelimiterIndex(line, pos)
+	const st = stackStyleTag(state)
+	if (nx < 0) {
+		if (stream.eol()) return null
+		stream.next()
+		return st
+	}
+	if (nx > pos) {
+		stream.pos = nx
+		return st
+	}
+
+	if (!stream.eol()) stream.next()
+	return st
 }
 
-function tokenHeadingRest(stream: StringStream): void {
+function tokenHeadingRest(stream: StringStream, state: KmlState): void {
 	while (!stream.eol()) {
 		stream.eatSpace()
 		if (stream.eol()) break
@@ -236,15 +329,49 @@ function tokenHeadingRest(stream: StringStream): void {
 			continue
 		}
 		const before = stream.pos
-		tokenInline(stream)
+		tokenInlineRich(stream, state)
 		if (stream.pos === before) {
 			stream.next()
 		}
 	}
 }
 
+function initCodeInnerState(state: KmlState, stream: StringStream) {
+	if (!state.codeInnerMode) return
+	if (state.codeInnerState == null) {
+		state.codeInnerState = startLegacyState(state.codeInnerMode, stream)
+		return
+	}
+	if (!state.codeInnerMode.copyState) {
+		state.codeInnerState = startLegacyState(state.codeInnerMode, stream)
+	}
+}
+
+function copyKmlState(state: KmlState): KmlState {
+	const next: KmlState = {
+		...state,
+		inlineStack: [...state.inlineStack],
+	}
+	if (state.codeInnerMode?.copyState && state.codeInnerState != null) {
+		next.codeInnerState = state.codeInnerMode.copyState(
+			state.codeInnerState,
+		)
+	} else if (
+		state.codeInnerState != null &&
+		typeof state.codeInnerState === 'object'
+	) {
+		try {
+			next.codeInnerState = structuredClone(state.codeInnerState)
+		} catch {
+			next.codeInnerState = state.codeInnerState
+		}
+	}
+	return next
+}
+
 const kmlStream = StreamLanguage.define<KmlState>({
 	name: 'kml',
+	copyState: copyKmlState,
 
 	startState() {
 		return {
@@ -254,10 +381,17 @@ const kmlStream = StreamLanguage.define<KmlState>({
 			inDollarDisplay: false,
 			inBracketDisplay: false,
 			inHtmlFence: false,
+			inlineStack: [],
+			codeInnerMode: null,
+			codeInnerState: null,
+			listContinuationCandidate: false,
 		}
 	},
 
-	/** Map token names that are not valid bare Lezer tag paths. */
+	blankLine(state) {
+		state.listContinuationCandidate = false
+	},
+
 	tokenTable: {
 		code: tags.monospace,
 		hr: tags.contentSeparator,
@@ -267,6 +401,15 @@ const kmlStream = StreamLanguage.define<KmlState>({
 	token(stream, state) {
 		if (stream.sol()) {
 			state.line += 1
+			const blockish =
+				state.inCodeBlock ||
+				state.inFrontmatter ||
+				state.inDollarDisplay ||
+				state.inBracketDisplay ||
+				state.inHtmlFence
+			if (!blockish) {
+				state.inlineStack = []
+			}
 		}
 
 		if (state.inHtmlFence) {
@@ -287,8 +430,24 @@ const kmlStream = StreamLanguage.define<KmlState>({
 				stream.eatSpace()
 				if (stream.match('```')) {
 					state.inCodeBlock = false
+					state.codeInnerMode = null
+					state.codeInnerState = null
 					stream.skipToEnd()
 					return 'meta'
+				}
+				initCodeInnerState(state, stream)
+			}
+			if (state.codeInnerMode && state.codeInnerState != null) {
+				try {
+					const t = readLegacyToken(
+						state.codeInnerMode,
+						stream,
+						state.codeInnerState,
+					)
+					return t ?? 'code'
+				} catch {
+					stream.skipToEnd()
+					return 'code'
 				}
 			}
 			stream.skipToEnd()
@@ -341,7 +500,22 @@ const kmlStream = StreamLanguage.define<KmlState>({
 			const rest = stream.string.slice(pos)
 			const trim = rest.trim()
 
+			if (
+				state.listContinuationCandidate &&
+				/^(\s{2,})(.+)$/.test(stream.string)
+			) {
+				const m = /^(\s{2,})(.+)$/.exec(
+					stream.string,
+				) as RegExpExecArray
+				const body = m[2]
+				if (!looksLikeBlockStartText(body)) {
+					stream.skipToEnd()
+					return 'quote'
+				}
+			}
+
 			if (isFenceLine(stream, pos)) {
+				state.listContinuationCandidate = false
 				if (state.line === 1) {
 					state.inFrontmatter = true
 					stream.skipToEnd()
@@ -352,23 +526,29 @@ const kmlStream = StreamLanguage.define<KmlState>({
 			}
 
 			if (stream.match('```')) {
+				state.listContinuationCandidate = false
 				state.inCodeBlock = true
 				stream.eatWhile(/[ \t]/)
+				let lang = ''
+				const beforeLang = stream.pos
 				if (stream.match(/[\w.#+-]+/)) {
-					stream.skipToEnd()
-					return 'meta keyword'
+					lang = stream.string.slice(beforeLang, stream.pos).trim()
 				}
+				state.codeInnerMode = resolveLegacyLang(lang)
+				state.codeInnerState = null
 				stream.skipToEnd()
-				return 'meta'
+				return lang ? 'meta keyword' : 'meta'
 			}
 
 			if (/^:::html\s*$/.test(trim)) {
+				state.listContinuationCandidate = false
 				state.inHtmlFence = true
 				stream.skipToEnd()
 				return 'meta'
 			}
 
 			if (trim.startsWith('$$')) {
+				state.listContinuationCandidate = false
 				if (dollarDisplaySingleLine(rest)) {
 					stream.skipToEnd()
 					return 'atom'
@@ -381,6 +561,7 @@ const kmlStream = StreamLanguage.define<KmlState>({
 			}
 
 			if (trim.startsWith('\\[')) {
+				state.listContinuationCandidate = false
 				if (bracketDisplaySingleLine(rest)) {
 					stream.skipToEnd()
 					return 'atom'
@@ -391,12 +572,13 @@ const kmlStream = StreamLanguage.define<KmlState>({
 			}
 
 			if (trim.startsWith('#')) {
+				state.listContinuationCandidate = false
 				if (stream.match(/^#\[\d+\]/)) {
-					tokenHeadingRest(stream)
+					tokenHeadingRest(stream, state)
 					return 'header'
 				}
 				if (stream.match(/^#/)) {
-					tokenHeadingRest(stream)
+					tokenHeadingRest(stream, state)
 					return 'header'
 				}
 			}
@@ -407,30 +589,36 @@ const kmlStream = StreamLanguage.define<KmlState>({
 				stream.match(/^=\[[^\]]+\]\s+/) ||
 				stream.match(/^=(?:[0-9]+|[aAiI])\.(?:\s|$)/)
 			) {
+				state.listContinuationCandidate = true
 				stream.skipToEnd()
 				return 'list'
 			}
 		}
 
-		return tokenInline(stream)
+		return tokenInlineRich(stream, state)
 	},
 })
 
-/** Maps parsed tags to static `cm-*` classes (pair with app `syntaxHighlighting`). */
 export const kmlHighlightStyle = HighlightStyle.define([
 	{ tag: tags.meta, class: 'cm-meta' },
 	{ tag: tags.keyword, class: 'cm-keyword' },
 	{ tag: tags.heading, class: 'cm-header' },
 	{ tag: tags.list, class: 'cm-list' },
+	{ tag: tags.quote, class: 'cm-quote' },
 	{ tag: tags.contentSeparator, class: 'cm-hr' },
 	{ tag: tags.tagName, class: 'cm-tag' },
 	{ tag: tags.strong, class: 'cm-strong' },
 	{ tag: tags.emphasis, class: 'cm-em' },
 	{ tag: tags.link, class: 'cm-link' },
+	{ tag: tags.url, class: 'cm-url' },
 	{ tag: tags.string, class: 'cm-string' },
 	{ tag: tags.special(tags.string), class: 'cm-string-special' },
 	{ tag: tags.atom, class: 'cm-atom' },
 	{ tag: tags.monospace, class: 'cm-code' },
+	{ tag: tags.definition(tags.variableName), class: 'cm-def' },
+	{ tag: tags.comment, class: 'cm-comment' },
+	{ tag: tags.operator, class: 'cm-operator' },
+	{ tag: tags.number, class: 'cm-number' },
 ])
 
 export function kmlLanguage() {
