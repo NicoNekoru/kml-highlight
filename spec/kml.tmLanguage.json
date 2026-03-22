@@ -1,0 +1,95 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Kernel ML",
+	"scopeName": "source.kml",
+	"fileTypes": ["kml"],
+	"patterns": [
+		{ "include": "#fenced-code" },
+		{ "include": "#display-math-dollar" },
+		{ "include": "#heading" },
+		{ "include": "#list-marker" },
+		{ "include": "#html-fence" },
+		{ "include": "#thematic-break" },
+		{ "include": "#inline" }
+	],
+	"repository": {
+		"fenced-code": {
+			"begin": "^\\s*(```)([\\w.#+-]*)\\s*$",
+			"beginCaptures": {
+				"1": { "name": "punctuation.definition.markdown" },
+				"2": { "name": "entity.name.function" }
+			},
+			"end": "^\\s*(```)\\s*$",
+			"endCaptures": {
+				"1": { "name": "punctuation.definition.markdown" }
+			},
+			"contentName": "meta.embedded.block",
+			"patterns": []
+		},
+		"display-math-dollar": {
+			"begin": "^\\s*(\\$\\$)",
+			"beginCaptures": {
+				"1": { "name": "punctuation.definition.math" }
+			},
+			"end": "\\$\\$",
+			"endCaptures": {
+				"0": { "name": "punctuation.definition.math" }
+			},
+			"contentName": "string.other.math",
+			"patterns": []
+		},
+		"heading": {
+			"match": "^\\s*(#(?:\\[\\d+\\])?)(\\s+.*)?$",
+			"captures": {
+				"1": { "name": "markup.heading.kml" },
+				"2": { "name": "markup.heading.kml" }
+			}
+		},
+		"list-marker": {
+			"match": "^\\s*((?:-\\[[^\\]]+\\]|- |=\\[[^\\]]+\\]|=(?:[0-9]+|[aAiI])\\.))\\s+",
+			"captures": {
+				"1": { "name": "markup.list" }
+			}
+		},
+		"html-fence": {
+			"match": "^\\s*(:::html)\\s*$",
+			"captures": {
+				"1": { "name": "punctuation.section.embedded" }
+			}
+		},
+		"thematic-break": {
+			"match": "^\\s*(---)\\s*$",
+			"captures": {
+				"1": { "name": "punctuation.definition.thematic-break" }
+			}
+		},
+		"inline": {
+			"patterns": [
+				{
+					"match": "\\*\\*",
+					"name": "punctuation.definition.bold"
+				},
+				{
+					"match": "(?<!\\*)\\*(?!\\*)",
+					"name": "punctuation.definition.italic"
+				},
+				{
+					"match": "`[^`\\n]*`",
+					"name": "markup.inline.raw.string"
+				},
+				{
+					"match": "(?<!\\$)\\$(?!\\$)[^$\\n]+\\$",
+					"name": "string.other.math"
+				},
+				{
+					"match": "\\\\\\([^\\n]*\\\\\\)",
+					"name": "string.other.math"
+				},
+				{
+					"match": "\\[[^\\]\\n]*\\]\\([^)\\n]*\\)",
+					"name": "markup.underline.link"
+				}
+			]
+		}
+	}
+}
