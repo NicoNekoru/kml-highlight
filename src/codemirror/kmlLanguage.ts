@@ -78,6 +78,7 @@ function nextDelimiterIndex(line: string, pos: number): number {
 	for (let i = pos; i < line.length; i++) {
 		if (line.startsWith('<br>', i)) return i
 		if (line.startsWith('**', i)) return i
+		if (line.startsWith('$$', i)) return i
 		if (line[i] === '*' && line[i + 1] !== '*') return i
 		if (line[i] === '`') return i
 		if (line[i] === '$' && line[i + 1] !== '$') return i
@@ -241,6 +242,16 @@ function tokenInlineRich(stream: StringStream, state: KmlState): string | null {
 
 	if (line[pos] === '`') {
 		return eatBacktickRun(stream, line, pos)
+	}
+
+	if (line.startsWith('$$', pos)) {
+		const close = line.indexOf('$$', pos + 2)
+		if (close > pos) {
+			stream.pos = close + 2
+			return 'atom'
+		}
+		stream.pos = pos + 2
+		return 'atom'
 	}
 
 	if (
