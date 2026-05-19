@@ -27,12 +27,51 @@ type KmlState = {
 	listContinuationCandidate: boolean
 }
 
+const escapableInlineChars = new Set([
+	'\\',
+	'$',
+	'*',
+	'`',
+	'[',
+	']',
+	'^',
+	'_',
+	'{',
+	'}',
+	'(',
+	')',
+	'<',
+	'>',
+	'|',
+])
+
 function trimmedFrom(stream: StringStream, pos: number): string {
 	return stream.string.slice(pos).trim()
 }
 
 function isFenceLine(stream: StringStream, pos: number): boolean {
 	return /^\s*---\s*$/.test(stream.string.slice(pos))
+}
+
+function isEscapedAt(line: string, pos: number): boolean {
+	let slashCount = 0
+	for (let i = pos - 1; i >= 0 && line[i] === '\\'; i--) {
+		slashCount++
+	}
+	return slashCount % 2 === 1
+}
+
+function isEscapableInlineChar(ch: string | undefined): boolean {
+	return ch !== undefined && escapableInlineChars.has(ch)
+}
+
+function findUnescaped(line: string, needle: string, from: number): number {
+	let pos = line.indexOf(needle, from)
+	while (pos >= 0) {
+		if (!isEscapedAt(line, pos)) return pos
+		pos = line.indexOf(needle, pos + needle.length)
+	}
+	return -1
 }
 
 function toggleBold(state: KmlState) {
@@ -76,18 +115,27 @@ function looksLikeBlockStartText(text: string): boolean {
 
 function nextDelimiterIndex(line: string, pos: number): number {
 	for (let i = pos; i < line.length; i++) {
-		if (line.startsWith('<br>', i)) return i
-		if (line.startsWith('**', i)) return i
-		if (line.startsWith('$$', i)) return i
-		if (line[i] === '*' && line[i + 1] !== '*') return i
-		if (line[i] === '`') return i
-		if (line[i] === '$' && line[i + 1] !== '$') return i
-		if (line.startsWith('\\(', i)) return i
-		if (line.startsWith('^[', i)) return i
-		if (line[i] === '[') return i
-		if (line.startsWith('^{', i)) return i
-		if (line.startsWith('_{', i)) return i
-		if (line.startsWith('\\n', i)) return i
+		if (line.startsWith('<br>', i) && !isEscapedAt(line, i)) return i
+		if (line.startsWith('\\(', i) && !isEscapedAt(line, i)) return i
+		if (line.startsWith('\\[', i) && !isEscapedAt(line, i)) return i
+		if (line[i] === '\\' && isEscapableInlineChar(line[i + 1])) {
+			i++
+			continue
+		}
+		if (line.startsWith('**', i) && !isEscapedAt(line, i)) return i
+		if (line.startsWith('$$', i) && !isEscapedAt(line, i)) return i
+		if (line[i] === '*' && line[i + 1] !== '*' && !isEscapedAt(line, i)) {
+			return i
+		}
+		if (line[i] === '`' && !isEscapedAt(line, i)) return i
+		if (line[i] === '$' && line[i + 1] !== '$' && !isEscapedAt(line, i)) {
+			return i
+		}
+		if (line.startsWith('^[', i) && !isEscapedAt(line, i)) return i
+		if (line[i] === '[' && !isEscapedAt(line, i)) return i
+		if (line.startsWith('^{', i) && !isEscapedAt(line, i)) return i
+		if (line.startsWith('_{', i) && !isEscapedAt(line, i)) return i
+		if (line.startsWith('\\n', i) && !isEscapedAt(line, i)) return i
 	}
 	return -1
 }
@@ -105,7 +153,7 @@ function eatBacktickRun(
 		return 'code'
 	}
 	const fence = '`'.repeat(n)
-	const close = line.indexOf(fence, stream.pos)
+	const close = findUnescaped(line, fence, stream.pos)
 	if (close >= 0) {
 		stream.pos = close + n
 	} else {
@@ -118,8 +166,8 @@ function eatBacktickRun(
 function consumeKmlLink(stream: StringStream): boolean {
 	const line = stream.string
 	const pos = stream.pos
-	if (line[pos] !== '[') return false
-	const closeBracket = line.indexOf(']', pos + 1)
+	if (line[pos] !== '[' || isEscapedAt(line, pos)) return false
+	const closeBracket = findUnescaped(line, ']', pos + 1)
 	if (closeBracket < 0) return false
 	const after = line.slice(closeBracket)
 	if (!after.startsWith('](')) return false
@@ -127,8 +175,8 @@ function consumeKmlLink(stream: StringStream): boolean {
 	let depth = 1
 	while (i < line.length) {
 		const c = line[i]
-		if (c === '(') depth++
-		else if (c === ')') {
+		if (c === '(' && !isEscapedAt(line, i)) depth++
+		else if (c === ')' && !isEscapedAt(line, i)) {
 			depth--
 			if (depth === 0) {
 				stream.pos = i + 1
@@ -143,13 +191,15 @@ function consumeKmlLink(stream: StringStream): boolean {
 function consumeKmlFootnote(stream: StringStream): boolean {
 	const line = stream.string
 	const pos = stream.pos
-	if (line[pos] !== '^' || line[pos + 1] !== '[') return false
+	if (line[pos] !== '^' || line[pos + 1] !== '[' || isEscapedAt(line, pos)) {
+		return false
+	}
 	let depth = 1
 	let i = pos + 2
 	while (i < line.length) {
 		const c = line[i]
-		if (c === '[') depth++
-		else if (c === ']') {
+		if (c === '[' && !isEscapedAt(line, i)) depth++
+		else if (c === ']' && !isEscapedAt(line, i)) {
 			depth--
 			if (depth === 0) {
 				stream.pos = i + 1
@@ -158,8 +208,8 @@ function consumeKmlFootnote(stream: StringStream): boolean {
 					stream.pos++
 					while (stream.pos < line.length) {
 						const ch = line[stream.pos]
-						if (ch === '(') d++
-						else if (ch === ')') {
+						if (ch === '(' && !isEscapedAt(line, stream.pos)) d++
+						else if (ch === ')' && !isEscapedAt(line, stream.pos)) {
 							d--
 							if (d === 0) {
 								stream.pos++
@@ -206,7 +256,7 @@ function consumeBracedAfter(stream: StringStream, openLen: 2 | 3): boolean {
 
 function dollarDisplaySingleLine(rest: string): boolean {
 	if (!rest.startsWith('$$')) return false
-	const close = rest.indexOf('$$', 2)
+	const close = findUnescaped(rest, '$$', 2)
 	return close > 2
 }
 
@@ -216,7 +266,7 @@ function dollarDisplayFenceOnly(rest: string): boolean {
 
 function bracketDisplaySingleLine(rest: string): boolean {
 	if (!rest.startsWith('\\[')) return false
-	const close = rest.indexOf('\\]')
+	const close = findUnescaped(rest, '\\]', 2)
 	return close > 2
 }
 
@@ -235,17 +285,17 @@ function tokenInlineRich(stream: StringStream, state: KmlState): string | null {
 	const line = stream.string
 	const pos = stream.pos
 
-	if (line.startsWith('<br>', pos)) {
+	if (line.startsWith('<br>', pos) && !isEscapedAt(line, pos)) {
 		stream.pos += 4
 		return 'keyword'
 	}
 
-	if (line[pos] === '`') {
+	if (line[pos] === '`' && !isEscapedAt(line, pos)) {
 		return eatBacktickRun(stream, line, pos)
 	}
 
-	if (line.startsWith('$$', pos)) {
-		const close = line.indexOf('$$', pos + 2)
+	if (line.startsWith('$$', pos) && !isEscapedAt(line, pos)) {
+		const close = findUnescaped(line, '$$', pos + 2)
 		if (close > pos) {
 			stream.pos = close + 2
 			return 'atom'
@@ -256,9 +306,10 @@ function tokenInlineRich(stream: StringStream, state: KmlState): string | null {
 
 	if (
 		line[pos] === '$' &&
-		(pos + 1 >= line.length || line[pos + 1] !== '$')
+		(pos + 1 >= line.length || line[pos + 1] !== '$') &&
+		!isEscapedAt(line, pos)
 	) {
-		const close = line.indexOf('$', pos + 1)
+		const close = findUnescaped(line, '$', pos + 1)
 		if (close > pos) {
 			stream.pos = close + 1
 			return 'atom'
@@ -267,50 +318,68 @@ function tokenInlineRich(stream: StringStream, state: KmlState): string | null {
 		return 'atom'
 	}
 
-	if (line.startsWith('\\(', pos)) {
-		const rel = line.slice(pos)
-		const end = rel.indexOf('\\)')
+	if (line.startsWith('\\(', pos) && !isEscapedAt(line, pos)) {
+		const end = findUnescaped(line, '\\)', pos + 2)
 		if (end >= 0) {
-			stream.pos = pos + end + 2
+			stream.pos = end + 2
 			return 'atom'
 		}
 		stream.next()
 		return 'meta'
 	}
 
-	if (line.startsWith('**', pos)) {
+	if (line.startsWith('\\[', pos) && !isEscapedAt(line, pos)) {
+		const end = findUnescaped(line, '\\]', pos + 2)
+		if (end >= 0) {
+			stream.pos = end + 2
+			return 'atom'
+		}
+		stream.next()
+		return 'meta'
+	}
+
+	if (line[pos] === '\\' && isEscapableInlineChar(line[pos + 1])) {
+		stream.pos = pos + 2
+		return stackStyleTag(state)
+	}
+
+	if (line.startsWith('**', pos) && !isEscapedAt(line, pos)) {
 		stream.pos = pos + 2
 		toggleBold(state)
 		return 'strong'
 	}
 
-	if (line[pos] === '*' && line[pos + 1] !== '*') {
+	if (line[pos] === '*' && line[pos + 1] !== '*' && !isEscapedAt(line, pos)) {
 		stream.pos = pos + 1
 		toggleItalic(state)
 		return 'em'
 	}
 
-	if (consumeKmlFootnote(stream)) return 'string.special'
+	if (!isEscapedAt(line, pos) && consumeKmlFootnote(stream)) {
+		return 'string.special'
+	}
 
-	if (line[pos] === '[') {
-		if (consumeKmlLink(stream)) return 'link'
-		stream.next()
+	if (
+		line[pos] === '[' &&
+		!isEscapedAt(line, pos) &&
+		consumeKmlLink(stream)
+	) {
 		return 'link'
 	}
 
-	if (line.startsWith('^{', pos)) {
+	if (line.startsWith('^{', pos) && !isEscapedAt(line, pos)) {
 		if (consumeBracedAfter(stream, 2)) return 'atom'
 		stream.pos = pos + 2
 		return 'atom'
 	}
 
-	if (line.startsWith('_{', pos)) {
+	if (line.startsWith('_{', pos) && !isEscapedAt(line, pos)) {
 		if (consumeBracedAfter(stream, 2)) return 'atom'
 		stream.pos = pos + 2
 		return 'atom'
 	}
 
-	if (line.startsWith('\\n', pos)) {
+	if (line.startsWith('\\n', pos) && !isEscapedAt(line, pos)) {
 		stream.pos += 2
 		return 'keyword'
 	}

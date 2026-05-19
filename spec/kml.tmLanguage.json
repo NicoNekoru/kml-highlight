@@ -27,11 +27,11 @@
 			"patterns": []
 		},
 		"display-math-dollar": {
-			"begin": "^\\s*(\\$\\$)",
+			"begin": "^\\s*((?<!\\\\)\\$\\$)",
 			"beginCaptures": {
 				"1": { "name": "punctuation.definition.math" }
 			},
-			"end": "\\$\\$",
+			"end": "(?<!\\\\)\\$\\$",
 			"endCaptures": {
 				"0": { "name": "punctuation.definition.math" }
 			},
@@ -66,31 +66,35 @@
 		"inline": {
 			"patterns": [
 				{
-					"match": "\\*\\*",
+					"match": "(?<!\\\\)\\*\\*",
 					"name": "punctuation.definition.bold"
 				},
 				{
-					"match": "(?<!\\*)\\*(?!\\*)",
+					"match": "(?<![\\\\*])\\*(?!\\*)",
 					"name": "punctuation.definition.italic"
 				},
 				{
-					"match": "`[^`\\n]*`",
+					"match": "(?<!\\\\)`(?:\\\\.|[^`\\n])*?(?<!\\\\)`",
 					"name": "markup.inline.raw.string"
 				},
 				{
-					"match": "(?<!\\$)\\$(?!\\$)[^$\\n]+\\$",
+					"match": "(?<![\\\\$])\\$(?!\\$)(?:\\\\.|[^\\\\$\\n])+?(?<!\\\\)\\$",
 					"name": "string.other.math"
 				},
 				{
-					"match": "\\\\\\([^\\n]*\\\\\\)",
+					"match": "(?<!\\\\)\\\\\\((?:\\\\.|[^\\n])*?(?<!\\\\)\\\\\\)",
 					"name": "string.other.math"
 				},
 				{
-					"match": "\\^[\\[][^\\]]*\\]",
+					"match": "(?<!\\\\)\\\\\\[(?:\\\\.|[^\\n])*?(?<!\\\\)\\\\\\]",
+					"name": "string.other.math"
+				},
+				{
+					"match": "(?<!\\\\)\\^[\\[](?:\\\\.|[^\\]])*\\]",
 					"name": "string.footnote"
 				},
 				{
-					"match": "\\[[^\\]\\n]*\\]\\([^)\\n]*\\)",
+					"match": "(?<!\\\\)\\[(?:\\\\.|[^\\]\\n])*\\]\\((?:\\\\.|[^)\\n])*\\)",
 					"name": "markup.underline.link"
 				}
 			]
