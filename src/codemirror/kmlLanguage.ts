@@ -101,6 +101,7 @@ function looksLikeBlockStartText(text: string): boolean {
 	const u = text.trimStart()
 	return (
 		/^#/.test(u) ||
+		/^>(?:\s|$)/.test(u) ||
 		/^\$\$/.test(u) ||
 		/^\\\[(?:\s|$)/.test(u) ||
 		/^```/.test(u) ||
@@ -627,6 +628,13 @@ const kmlStream = StreamLanguage.define<KmlState>({
 				return 'meta'
 			}
 
+			const quotePrefix = /^(?:>[ \t]?)+/.exec(rest)
+			if (quotePrefix) {
+				state.listContinuationCandidate = false
+				stream.pos = pos + quotePrefix[0].length
+				return 'quote'
+			}
+
 			if (trim.startsWith('$$')) {
 				state.listContinuationCandidate = false
 				if (dollarDisplaySingleLine(rest)) {
@@ -666,8 +674,9 @@ const kmlStream = StreamLanguage.define<KmlState>({
 			if (
 				stream.match(/^-\[[^\]]+\]\s+/) ||
 				stream.match(/^-\s+/) ||
-				stream.match(/^=\[[^\]]+\]\s+/) ||
-				stream.match(/^=(?:[0-9]+|[aAiI])\.(?:\s|$)/)
+				stream.match(/^=\[[^\]]+\](?:\s|$)/) ||
+				stream.match(/^=(?:\s|$)/) ||
+				stream.match(/^=(?:[0-9]+|[A-Za-z]+)[.)]?\s+/)
 			) {
 				state.listContinuationCandidate = true
 				stream.skipToEnd()
