@@ -665,7 +665,7 @@ const kmlStream = StreamLanguage.define<KmlState>({
 					tokenHeadingRest(stream, state)
 					return 'header'
 				}
-				if (stream.match(/^#/)) {
+				if (stream.match(/^#+/)) {
 					tokenHeadingRest(stream, state)
 					return 'header'
 				}
@@ -676,7 +676,8 @@ const kmlStream = StreamLanguage.define<KmlState>({
 				stream.match(/^-\s+/) ||
 				stream.match(/^=\[[^\]]+\](?:\s|$)/) ||
 				stream.match(/^=(?:\s|$)/) ||
-				stream.match(/^=(?:[0-9]+|[A-Za-z]+)[.)]?\s+/)
+				stream.match(/^=(?:[0-9]+|[A-Za-z]+)[.)]?\s+/) ||
+				stream.match(/^(?:[0-9]+|[A-Za-z]+)[.)](?:\s+|$)/)
 			) {
 				state.listContinuationCandidate = true
 				stream.skipToEnd()
